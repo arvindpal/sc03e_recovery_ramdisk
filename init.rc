@@ -17,6 +17,10 @@ on init
     mkdir /efs
     mount /tmp /tmp tmpfs
 
+# ko files for exfat
+    insmod /lib/modules/exfat_core.ko
+    insmod /lib/modules/exfat_fs.ko
+
 on boot
     ifup lo
     hostname localhost

@@ -1,25 +1,48 @@
+import /init.recovery.usb.rc
+import /init.recovery.${ro.hardware}.rc
+
 on early-init
+    # Apply strict SELinux checking of PROT_EXEC on mmap/mprotect calls.
+    write /sys/fs/selinux/checkreqprot 0
+
+    # Set the security context for the init process.
+    # This should occur before anything else (e.g. ueventd) is started.
+    setcon u:r:init:s0
+
     start ueventd
+    start healthd
+
+service set_permissive /sbin/toolbox setenforce 0
+    oneshot
+    seclabel u:r:recovery:s0
 
 on init
-    export PATH /sbin:/vendor/bin:/system/sbin:/system/bin:/system/xbin
+    export PATH /sbin:/system/bin
+    export LD_LIBRARY_PATH .:/sbin
     export ANDROID_ROOT /system
     export ANDROID_DATA /data
     export EXTERNAL_STORAGE /sdcard
 
-    mkdir /sdcard
-    mkdir /extSdCard
-    mkdir /external_sd
+    mkdir /boot
+    mkdir /recovery
     mkdir /system
     mkdir /data
     mkdir /cache
-    mkdir /preload
-    mkdir /efs
-    mount /tmp /tmp tmpfs
+    mkdir /sideload
+    mount tmpfs tmpfs /tmp
 
-# ko files for exfat
-    insmod /lib/modules/exfat_core.ko
-    insmod /lib/modules/exfat_fs.ko
+    chown root shell /tmp
+    chmod 0775 /tmp
+
+    write /proc/sys/kernel/panic_on_oops 1
+    write /proc/sys/vm/max_map_count 1000000
+
+on fs
+    mount pstore pstore /sys/fs/pstore
+
+    mkdir /dev/usb-ffs 0770 shell shell
+    mkdir /dev/usb-ffs/adb 0770 shell shell
+    mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000
 
 on boot
     ifup lo
@@ -28,38 +51,53 @@ on boot
 
     class_start default
 
+# Load properties from /system/ + /factory after fs mount.
+on load_all_props_action
+    load_all_props
+
+on firmware_mounts_complete
+   rm /dev/.booting
+
+# Mount filesystems and start core system services.
+on late-init
+    trigger early-fs
+    trigger fs
+    trigger post-fs
+    trigger post-fs-data
+
+    # Load properties from /system/ + /factory after fs mount. Place
+    # this in another action so that the load will be scheduled after the prior
+    # issued fs triggers have completed.
+    trigger load_all_props_action
+
+    # Remove a file to wake up anything waiting for firmware
+    trigger firmware_mounts_complete
+
+    trigger early-boot
+    trigger boot
+
+on property:sys.powerctl=*
+   powerctl ${sys.powerctl}
+
 service ueventd /sbin/ueventd
     critical
+    seclabel u:r:ueventd:s0
 
-service console /sbin/sh
-    class core
-    console
+service healthd /sbin/healthd -r
+    critical
+    seclabel u:r:healthd:s0
+
+service recovery /sbin/recovery
+
+service adbd /sbin/adbd --root_seclabel=u:r:su:s0 --device_banner=recovery
     disabled
-    group log
-
-on property:ro.debuggable=1
-    start console
-
-#service recovery /sbin/recovery
-service recovery /sbin/recovery-prepprocess
-
-service adbd /sbin/adbd recovery
-    disabled
+    socket adbd stream 660 system system
+    seclabel u:r:adbd:s0
 
 # Always start adbd on userdebug and eng builds
 on property:ro.debuggable=1
-    setprop adb.recovery 1
-
-on property:adb.recovery=1
-    write /sys/class/android_usb/android0/enable 0
-    write /sys/class/android_usb/android0/idVendor 04e8
-    write /sys/class/android_usb/android0/idProduct 6860
-    write /sys/class/android_usb/android0/functions adb
-    write /sys/class/android_usb/android0/enable 1
-    write /sys/class/android_usb/android0/iManufacturer $ro.product.manufacturer
-    write /sys/class/android_usb/android0/iProduct $ro.product.model
-    write /sys/class/android_usb/android0/iSerial $ro.serialno
-    start adbd
+    #write /sys/class/android_usb/android0/enable 1
+    #start adbd
     setprop service.adb.root 1
 
 # Restart adbd so it can run as root
